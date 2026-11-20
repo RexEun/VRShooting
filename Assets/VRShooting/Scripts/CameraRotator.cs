@@ -12,6 +12,12 @@ public class CameraRotator : MonoBehaviour
 #if UNITY_EDITOR
     void Update()
     {
+        // VR 헤드셋이 연결되어 활성화된 상태라면 VR 시선 트래킹에 맡기고 키보드 회전은 비활성화
+        if (UnityEngine.XR.XRSettings.isDeviceActive || UnityEngine.XR.XRSettings.enabled)
+        {
+            return;
+        }
+
         // 입력에 따라 회전량을 취득
         var horizontalRotation = Input.GetAxis("Horizontal") * angularVelocity * Time.deltaTime;
         var verticalRotation = -Input.GetAxis("Vertical") * angularVelocity * Time.deltaTime;
