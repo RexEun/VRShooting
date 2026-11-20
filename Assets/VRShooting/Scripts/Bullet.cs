@@ -25,8 +25,8 @@ public class Bullet : MonoBehaviour
     // 트리거 영역 진입 시에 호출된다
     void OnTriggerEnter(Collider other)
     {
-        // 충돌 대상에 "OnHitBullet" 메시지
-        other.SendMessage("OnHitBullet");
+        // 충돌 대상에 "OnHitBullet" 메시지 (리시버가 없어도 에러 미발생)
+        other.SendMessage("OnHitBullet", SendMessageOptions.DontRequireReceiver);
 
         // 총알 적중 지점에 연출 자동 재생의 게임 오브젝트를 생성 
         Instantiate(hitParticlePrefab, transform.position, transform.rotation);
