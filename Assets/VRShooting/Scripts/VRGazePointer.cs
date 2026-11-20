@@ -9,8 +9,9 @@ using DG.Tweening;
 public class VRGazePointer : MonoBehaviour
 {
     [Header("Pointer Settings")]
-    [SerializeField] float gazeClickTime = 1.2f;    // 시선 응시 자동 클릭 시간 (0이면 비활성화)
-    [SerializeField] float laserWidth = 0.008f;    // 컨트롤러 레이저 굵기
+    [SerializeField] float maxLaserDistance = 1500f; // 레이저 빔 최대 거리 (z=800 캔버스까지 도달)
+    [SerializeField] float laserWidth = 0.015f;     // 레이저 빔 굵기
+    [SerializeField] float gazeClickTime = 1.2f;    // 시선 응시 자동 클릭 (0이면 비활성화)
 
     Camera cam;
     Transform pointerDot;
@@ -18,9 +19,6 @@ public class VRGazePointer : MonoBehaviour
     Button currentButton;
     float gazeTimer = 0f;
     Vector3 originalButtonScale = Vector3.one;
-
-    InputDevice rightController;
-    InputDevice leftController;
     bool wasTriggerPressed = false;
 
     // 모든 씬 로드 시 메인 카메라에 자동 부착
@@ -42,7 +40,7 @@ public class VRGazePointer : MonoBehaviour
         CreatePointerDot();
         CreateLaserLine();
 
-        // 카메라 하위의 구형 Pointer(화면에 붙어있던 빨간 점)는 비활성화하여 시야 방해 제거
+        // 카메라 하위의 구형 정중앙 빨간 점은 비활성화하여 시야 방해 제거
         var oldPointer = transform.Find("Pointer");
         if (oldPointer != null)
         {
@@ -52,7 +50,6 @@ public class VRGazePointer : MonoBehaviour
 
     void CreatePointerDot()
     {
-        // 3D 월드 공간의 버튼 표면에 붙는 동적 조준점 생성
         var dotObj = GameObject.CreatePrimitive(PrimitiveType.Sphere);
         dotObj.name = "VR_WorldPointerDot";
         dotObj.transform.localScale = Vector3.one * 0.1f;
@@ -64,7 +61,7 @@ public class VRGazePointer : MonoBehaviour
         if (renderer != null)
         {
             renderer.material = new Material(Shader.Find("Sprites/Default"));
-            renderer.material.color = new Color(0.2f, 0.85f, 1f, 0.95f); // 산뜻한 시안 블루
+            renderer.material.color = new Color(0.1f, 0.9f, 1f, 0.95f); // 선명한 오큘러스 시안 블루
         }
 
         pointerDot = dotObj.transform;
@@ -73,15 +70,14 @@ public class VRGazePointer : MonoBehaviour
 
     void CreateLaserLine()
     {
-        // 컨트롤러에서 뻗어나가는 레이저 빔
         laserLine = gameObject.AddComponent<LineRenderer>();
         laserLine.material = new Material(Shader.Find("Sprites/Default"));
-        laserLine.startColor = new Color(0.2f, 0.8f, 1f, 0.7f);
-        laserLine.endColor = new Color(0.2f, 0.8f, 1f, 0.1f);
+        laserLine.startColor = new Color(0.2f, 0.85f, 1f, 0.85f);
+        laserLine.endColor = new Color(0.2f, 0.85f, 1f, 0.15f);
         laserLine.startWidth = laserWidth;
-        laserLine.endWidth = laserWidth * 0.3f;
+        laserLine.endWidth = laserWidth * 0.5f;
         laserLine.positionCount = 2;
-        laserLine.enabled = false;
+        laserLine.enabled = true;
     }
 
     void Update()
@@ -92,10 +88,10 @@ public class VRGazePointer : MonoBehaviour
             if (cam == null) return;
         }
 
-        // 1. 조준 레이(Ray) 결정: 컨트롤러 손 위치 우선 ➔ 컨트롤러 미사용 시 시선(카메라)
-        Ray ray = GetAimRay(out bool isControllerActive, out Vector3 origin);
+        // 1. 오큘러스 순정 스타일 조준 레이(Ray) 계산 (컨트롤러 손 위치 우선)
+        Ray ray = GetOculusAimRay(out Vector3 beamOrigin);
 
-        // 2. 씬 내의 모든 활성화된 버튼과 3D 기하 평면 교차 검사
+        // 2. 씬 내 버튼들과 3D 기하 교차 검사
         Button hitButton = null;
         Vector3 hitPoint = Vector3.zero;
         float minDistance = float.MaxValue;
@@ -111,13 +107,13 @@ public class VRGazePointer : MonoBehaviour
             Vector3[] corners = new Vector3[4];
             rect.GetWorldCorners(corners);
 
-            // 버튼의 3D 평면
+            // 버튼의 3D 평면과의 교차 판정
             Plane plane = new Plane(corners[0], corners[1], corners[2]);
-            if (plane.Raycast(ray, out float enter) && enter > 0f && enter < minDistance)
+            if (plane.Raycast(ray, out float enter) && enter > 0f && enter < minDistance && enter < maxLaserDistance)
             {
                 Vector3 candidateHit = ray.GetPoint(enter);
 
-                // 사각형 내부 포함 여부 판정
+                // 버튼 사각형 내부인지 정확히 판정
                 Vector3 vUp = corners[1] - corners[0];
                 Vector3 vRight = corners[3] - corners[0];
                 Vector3 d = candidateHit - corners[0];
@@ -134,38 +130,30 @@ public class VRGazePointer : MonoBehaviour
             }
         }
 
-        // 3. 레이저 및 조준점 시각화 업데이트
-        if (hitButton != null)
+        // 3. 레이저 빔 및 조준점 시각화
+        if (laserLine != null)
         {
-            // 버튼 표면에 조준점을 딱 붙여서 표시 (입체감 일치)
-            pointerDot.gameObject.SetActive(true);
-            pointerDot.position = hitPoint;
-            pointerDot.localScale = Vector3.one * (minDistance * 0.035f); // 거리에 비례하여 크기 유지
+            laserLine.enabled = true;
+            laserLine.SetPosition(0, beamOrigin);
 
-            if (isControllerActive && laserLine != null)
+            if (hitButton != null)
             {
-                laserLine.enabled = true;
-                laserLine.SetPosition(0, origin);
+                // 버튼에 레이저 빔이 도달했을 때
                 laserLine.SetPosition(1, hitPoint);
-            }
-        }
-        else
-        {
-            if (isControllerActive && laserLine != null)
-            {
-                laserLine.enabled = true;
-                laserLine.SetPosition(0, origin);
-                laserLine.SetPosition(1, ray.GetPoint(15f));
-                pointerDot.gameObject.SetActive(false);
+                pointerDot.gameObject.SetActive(true);
+                pointerDot.position = hitPoint;
+                pointerDot.localScale = Vector3.one * Mathf.Max(0.1f, minDistance * 0.04f); // 원근감에 맞춘 조준점 크기
             }
             else
             {
-                if (laserLine != null) laserLine.enabled = false;
+                // 허공을 가리킬 때도 시원하게 뻗어나가는 빔 연출
+                float beamLength = Mathf.Min(800f, maxLaserDistance);
+                laserLine.SetPosition(1, ray.GetPoint(beamLength));
                 pointerDot.gameObject.SetActive(false);
             }
         }
 
-        // 4. 호버(Hover) 상태 전환 및 스케일 애니메이션
+        // 4. 호버(Hover) 상태 전환 및 확대 피드백
         if (hitButton != currentButton)
         {
             if (currentButton != null)
@@ -179,30 +167,28 @@ public class VRGazePointer : MonoBehaviour
             if (currentButton != null)
             {
                 originalButtonScale = currentButton.transform.localScale;
-                currentButton.transform.DOScale(originalButtonScale * 1.08f, 0.15f);
+                currentButton.transform.DOScale(originalButtonScale * 1.1f, 0.15f);
             }
         }
 
-        // 5. 클릭 입력 처리 (컨트롤러 트리거, A/X 버튼, 마우스 좌클릭, 스페이스바)
-        bool isTriggerDown = CheckTriggerDown();
+        // 5. 트리거 입력 처리 (모든 컨트롤러 트리거 & 버튼 & 마우스 지원)
+        bool isTriggerDown = CheckUniversalTriggerDown();
 
         if (currentButton != null)
         {
-            // 컨트롤러 트리거 또는 마우스 클릭 시 즉각 실행
             if (isTriggerDown)
             {
-                TriggerClick(currentButton);
+                ExecuteButtonClick(currentButton);
                 return;
             }
 
-            // 시선 응시 자동 클릭 (gazeClickTime초 동안 바라보면 클릭)
             if (gazeClickTime > 0f)
             {
                 gazeTimer += Time.deltaTime;
                 if (gazeTimer >= gazeClickTime)
                 {
                     gazeTimer = 0f;
-                    TriggerClick(currentButton);
+                    ExecuteButtonClick(currentButton);
                 }
             }
         }
@@ -212,78 +198,127 @@ public class VRGazePointer : MonoBehaviour
         }
     }
 
-    Ray GetAimRay(out bool isControllerActive, out Vector3 origin)
+    Ray GetOculusAimRay(out Vector3 beamOrigin)
     {
-        if (!rightController.isValid)
-            rightController = InputDevices.GetDeviceAtXRNode(XRNode.RightHand);
-        if (!leftController.isValid)
-            leftController = InputDevices.GetDeviceAtXRNode(XRNode.LeftHand);
-
-        // 1. 오른손 컨트롤러 우선 확인
-        if (rightController.isValid &&
-            rightController.TryGetFeatureValue(CommonUsages.devicePosition, out Vector3 rPos) &&
-            rightController.TryGetFeatureValue(CommonUsages.deviceRotation, out Quaternion rRot) &&
-            rPos != Vector3.zero)
+        // 1. 오른손 컨트롤러 트래킹 시도
+        if (TryGetControllerTransform(XRNode.RightHand, out Vector3 rPos, out Quaternion rRot))
         {
-            isControllerActive = true;
-            origin = rPos;
+            beamOrigin = rPos;
             return new Ray(rPos, rRot * Vector3.forward);
         }
 
-        // 2. 왼손 컨트롤러 확인
-        if (leftController.isValid &&
-            leftController.TryGetFeatureValue(CommonUsages.devicePosition, out Vector3 lPos) &&
-            leftController.TryGetFeatureValue(CommonUsages.deviceRotation, out Quaternion lRot) &&
-            lPos != Vector3.zero)
+        // 2. 왼손 컨트롤러 트래킹 시도
+        if (TryGetControllerTransform(XRNode.LeftHand, out Vector3 lPos, out Quaternion lRot))
         {
-            isControllerActive = true;
-            origin = lPos;
+            beamOrigin = lPos;
             return new Ray(lPos, lRot * Vector3.forward);
         }
 
-        // 3. 컨트롤러가 없으면 카메라(시선)에서 발사
-        isControllerActive = false;
-        origin = cam.transform.position;
-        return new Ray(cam.transform.position, cam.transform.forward);
+        // 3. 컨트롤러 트래킹이 안 될 경우: 카메라 기준 가상 오른손 위치(가슴 앞 30cm, 우측 20cm)에서 빔 발사
+        Vector3 virtualHandPos = cam.transform.position +
+                                cam.transform.right * 0.22f +
+                                cam.transform.down * 0.2f +
+                                cam.transform.forward * 0.35f;
+
+        beamOrigin = virtualHandPos;
+        return new Ray(virtualHandPos, cam.transform.forward);
     }
 
-    void TriggerClick(Button btn)
+    bool TryGetControllerTransform(XRNode node, out Vector3 worldPos, out Quaternion worldRot)
+    {
+        worldPos = Vector3.zero;
+        worldRot = Quaternion.identity;
+
+        Vector3 localPos = Vector3.zero;
+        Quaternion localRot = Quaternion.identity;
+        bool found = false;
+
+        // A. InputDevices 탐색
+        var devices = new List<InputDevice>();
+        var charMask = (node == XRNode.RightHand) ? InputDeviceCharacteristics.Right : InputDeviceCharacteristics.Left;
+        charMask |= InputDeviceCharacteristics.Controller;
+        InputDevices.GetDevicesWithCharacteristics(charMask, devices);
+
+        if (devices.Count > 0)
+        {
+            if (devices[0].TryGetFeatureValue(CommonUsages.devicePosition, out localPos) &&
+                devices[0].TryGetFeatureValue(CommonUsages.deviceRotation, out localRot) &&
+                localPos != Vector3.zero)
+            {
+                found = true;
+            }
+        }
+
+        // B. InputTracking 탐색 (Oculus Link 네이티브 지원)
+        if (!found)
+        {
+            localPos = UnityEngine.XR.InputTracking.GetLocalPosition(node);
+            localRot = UnityEngine.XR.InputTracking.GetLocalRotation(node);
+            if (localPos != Vector3.zero) found = true;
+        }
+
+        if (found)
+        {
+            // 헤드셋 카메라 월드 좌표계를 기준으로 컨트롤러 월드 위치 계산
+            worldPos = cam.transform.position + cam.transform.rotation * localPos;
+            worldRot = cam.transform.rotation * localRot;
+            return true;
+        }
+
+        return false;
+    }
+
+    void ExecuteButtonClick(Button btn)
     {
         if (btn == null) return;
 
-        // 클릭 연출 (펀치 스케일)
-        btn.transform.DOPunchScale(Vector3.one * 0.12f, 0.2f, 10, 1f);
-
-        // Button의 onClick 이벤트 실행
+        btn.transform.DOPunchScale(Vector3.one * 0.15f, 0.2f, 10, 1f);
         btn.onClick.Invoke();
 
-        // EventSystem 이벤트 발송
         var pointerEventData = new PointerEventData(EventSystem.current);
         ExecuteEvents.Execute(btn.gameObject, pointerEventData, ExecuteEvents.pointerClickHandler);
         ExecuteEvents.Execute(btn.gameObject, pointerEventData, ExecuteEvents.submitHandler);
     }
 
-    bool CheckTriggerDown()
+    bool CheckUniversalTriggerDown()
     {
         bool isPressed = false;
 
-        if (rightController.isValid)
+        // 1. XR 컨트롤러 트리거/A/X 버튼
+        var controllers = new List<InputDevice>();
+        InputDevices.GetDevicesWithCharacteristics(InputDeviceCharacteristics.Controller, controllers);
+        foreach (var dev in controllers)
         {
-            if (rightController.TryGetFeatureValue(CommonUsages.triggerButton, out bool pressed) && pressed) isPressed = true;
-            if (rightController.TryGetFeatureValue(CommonUsages.trigger, out float val) && val > 0.4f) isPressed = true;
-            if (rightController.TryGetFeatureValue(CommonUsages.primaryButton, out bool aBtn) && aBtn) isPressed = true;
+            if (dev.TryGetFeatureValue(CommonUsages.triggerButton, out bool tb) && tb) isPressed = true;
+            if (dev.TryGetFeatureValue(CommonUsages.trigger, out float tVal) && tVal > 0.35f) isPressed = true;
+            if (dev.TryGetFeatureValue(CommonUsages.primaryButton, out bool pb) && pb) isPressed = true;
         }
 
-        if (leftController.isValid)
+        // 2. 조이스틱 버튼 (Oculus Touch 버튼: 15번 우측트리거, 14번 좌측트리거, 0번 A, 2번 X)
+        if (Input.GetKey(KeyCode.JoystickButton15) || Input.GetKey(KeyCode.JoystickButton14) ||
+            Input.GetKey(KeyCode.JoystickButton0) || Input.GetKey(KeyCode.JoystickButton2))
         {
-            if (leftController.TryGetFeatureValue(CommonUsages.triggerButton, out bool pressed) && pressed) isPressed = true;
-            if (leftController.TryGetFeatureValue(CommonUsages.trigger, out float val) && val > 0.4f) isPressed = true;
-            if (leftController.TryGetFeatureValue(CommonUsages.primaryButton, out bool xBtn) && xBtn) isPressed = true;
+            isPressed = true;
         }
 
-        // PC 입력 (마우스 좌클릭, 스페이스바, 엔터, Fire1, Submit)
-        if (Input.GetMouseButtonDown(0) || Input.GetButtonDown("Fire1") || Input.GetButtonDown("Submit") ||
-            Input.GetKeyDown(KeyCode.Space) || Input.GetKeyDown(KeyCode.Return))
+        // 3. 모든 조이스틱 버튼 0~19
+        for (int i = 0; i < 20; i++)
+        {
+            if (Input.GetKey(KeyCode.JoystickButton0 + i)) isPressed = true;
+        }
+
+        // 4. 트리거 아날로그 축
+        try
+        {
+            if (Mathf.Abs(Input.GetAxisRaw("Axis 9")) > 0.35f || Mathf.Abs(Input.GetAxisRaw("Axis 10")) > 0.35f)
+            {
+                isPressed = true;
+            }
+        }
+        catch {}
+
+        // 5. PC 입력 (마우스 좌클릭, 스페이스바, 엔터, Fire1)
+        if (Input.GetButton("Fire1") || Input.GetMouseButton(0) || Input.GetKey(KeyCode.Space) || Input.GetKey(KeyCode.Return))
         {
             isPressed = true;
         }
