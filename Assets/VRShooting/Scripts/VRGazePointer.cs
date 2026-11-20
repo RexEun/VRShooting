@@ -214,10 +214,10 @@ public class VRGazePointer : MonoBehaviour
             return new Ray(lPos, lRot * Vector3.forward);
         }
 
-        // 3. 컨트롤러 트래킹이 안 될 경우: 카메라 기준 가상 오른손 위치(가슴 앞 30cm, 우측 20cm)에서 빔 발사
+        // 3. 컨트롤러 트래킹이 안 될 경우: 카메라 기준 가상 오른손 위치(가슴 앞 30cm, 우측 22cm)에서 빔 발사
         Vector3 virtualHandPos = cam.transform.position +
-                                cam.transform.right * 0.22f +
-                                cam.transform.down * 0.2f +
+                                cam.transform.right * 0.22f -
+                                cam.transform.up * 0.2f +
                                 cam.transform.forward * 0.35f;
 
         beamOrigin = virtualHandPos;
