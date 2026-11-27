@@ -9,11 +9,31 @@ public class CameraRotator : MonoBehaviour
     float horizontalAngle = 0f; // 수평 방향의 회전량을 보존
     float verticalAngle = 0f;   // 수직 방향의 회전량을 보존
 
+    public static bool IsVRActive()
+    {
+        var xrDisplays = new List<UnityEngine.XR.XRDisplaySubsystem>();
+        SubsystemManager.GetInstances(xrDisplays);
+        foreach (var display in xrDisplays)
+        {
+            if (display.running) return true;
+        }
+
+        var devices = new List<UnityEngine.XR.InputDevice>();
+        UnityEngine.XR.InputDevices.GetDevicesWithCharacteristics(UnityEngine.XR.InputDeviceCharacteristics.HeadMounted, devices);
+        if (devices.Count > 0) return true;
+
+#pragma warning disable 0618
+        if (UnityEngine.XR.XRSettings.isDeviceActive || UnityEngine.XR.XRSettings.enabled) return true;
+#pragma warning restore 0618
+
+        return false;
+    }
+
 #if UNITY_EDITOR
     void Update()
     {
         // VR 헤드셋이 연결되어 활성화된 상태라면 VR 시선 트래킹에 맡기고 키보드 회전은 비활성화
-        if (UnityEngine.XR.XRSettings.isDeviceActive || UnityEngine.XR.XRSettings.enabled)
+        if (IsVRActive())
         {
             return;
         }

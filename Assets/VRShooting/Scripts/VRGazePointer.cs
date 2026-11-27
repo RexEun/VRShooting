@@ -40,10 +40,19 @@ public class VRGazePointer : MonoBehaviour
 
         CreatePointerDot();
         CreateLaserLine();
+        DisableOldPointer();
+    }
 
-        // 카메라 하위의 구형 정중앙 빨간 점은 비활성화하여 시야 방해 제거
+    void Start()
+    {
+        DisableOldPointer();
+    }
+
+    void DisableOldPointer()
+    {
+        // 카메라 하위의 구형 정중앙 빨간 점(Pointer)은 비활성화하여 시야 방해 제거
         var oldPointer = transform.Find("Pointer");
-        if (oldPointer != null)
+        if (oldPointer != null && oldPointer.gameObject.activeSelf)
         {
             oldPointer.gameObject.SetActive(false);
         }
@@ -89,10 +98,15 @@ public class VRGazePointer : MonoBehaviour
             if (cam == null) return;
         }
 
-        // 1. 오큘러스 순정 스타일 조준 레이(Ray) 계산 (컨트롤러 손 위치 우선)
+        DisableOldPointer();
+
+        // 1. 유니티 6 VR 헤드셋 트래킹 동기화 (카메라 회전 갱신 -> 월드 캔버스가 시선에 달라붙지 않고 공간에 고정됨)
+        UpdateHeadTracking();
+
+        // 2. 오큘러스 순정 스타일 조준 레이(Ray) 계산 (컨트롤러 손 위치 우선)
         Ray ray = GetOculusAimRay(out Vector3 beamOrigin);
 
-        // 2. 씬 내 버튼들과 3D 기하 교차 검사
+        // 3. 씬 내 버튼들과 3D 기하 교차 검사
         Button hitButton = null;
         Vector3 hitPoint = Vector3.zero;
         float minDistance = float.MaxValue;
@@ -131,7 +145,7 @@ public class VRGazePointer : MonoBehaviour
             }
         }
 
-        // 3. 레이저 빔 및 조준점 시각화
+        // 4. 레이저 빔 및 조준점 시각화
         if (laserLine != null)
         {
             laserLine.enabled = true;
@@ -154,7 +168,7 @@ public class VRGazePointer : MonoBehaviour
             }
         }
 
-        // 4. 호버(Hover) 상태 전환 및 확대 피드백
+        // 5. 호버(Hover) 상태 전환 및 확대 피드백
         if (hitButton != currentButton)
         {
             if (currentButton != null)
@@ -172,7 +186,7 @@ public class VRGazePointer : MonoBehaviour
             }
         }
 
-        // 5. 트리거 입력 처리 (모든 컨트롤러 트리거 & 버튼 & 마우스 지원)
+        // 6. 트리거 입력 처리 (모든 컨트롤러 트리거 & 버튼 & 마우스 지원)
         bool isTriggerDown = CheckUniversalTriggerDown();
 
         if (currentButton != null)
@@ -199,6 +213,37 @@ public class VRGazePointer : MonoBehaviour
         }
     }
 
+    void UpdateHeadTracking()
+    {
+        // VR 헤드셋 트래킹 정보를 읽어 카메라 회전/위치를 직접 갱신 (TrackedPoseDriver 없이도 VR 회전 완벽 보장)
+        bool gotRot = false;
+
+        var headDevices = new List<InputDevice>();
+        InputDevices.GetDevicesAtXRNode(XRNode.CenterEye, headDevices);
+        if (headDevices.Count == 0)
+        {
+            InputDevices.GetDevicesWithCharacteristics(InputDeviceCharacteristics.HeadMounted, headDevices);
+        }
+
+        if (headDevices.Count > 0)
+        {
+            if (headDevices[0].TryGetFeatureValue(CommonUsages.deviceRotation, out Quaternion hRot) && hRot != Quaternion.identity)
+            {
+                cam.transform.localRotation = hRot;
+                gotRot = true;
+            }
+        }
+
+        if (!gotRot)
+        {
+            Quaternion hRot = UnityEngine.XR.InputTracking.GetLocalRotation(XRNode.CenterEye);
+            if (hRot != Quaternion.identity)
+            {
+                cam.transform.localRotation = hRot;
+            }
+        }
+    }
+
     Ray GetOculusAimRay(out Vector3 beamOrigin)
     {
         // 1. 오른손 컨트롤러 트래킹 시도
@@ -215,7 +260,14 @@ public class VRGazePointer : MonoBehaviour
             return new Ray(lPos, lRot * Vector3.forward);
         }
 
-        // 3. 컨트롤러 트래킹이 안 될 경우: 카메라 기준 가상 오른손 위치(가슴 앞 30cm, 우측 22cm)에서 빔 발사
+        // 3. PC 에디터 마우스 조작 폴백 (VR 기기 미착용 시 마우스로 바로 클릭 가능)
+        if (Input.mousePresent && (Mathf.Abs(Input.GetAxis("Mouse X")) > 0.05f || Mathf.Abs(Input.GetAxis("Mouse Y")) > 0.05f || Input.GetMouseButton(0)))
+        {
+            beamOrigin = cam.transform.position;
+            return cam.ScreenPointToRay(Input.mousePosition);
+        }
+
+        // 4. 컨트롤러 트래킹이 안 될 경우: 카메라 기준 가상 오른손 위치(가슴 앞 35cm, 우측 22cm)에서 전방으로 빔 발사
         Vector3 virtualHandPos = cam.transform.position +
                                 cam.transform.right * 0.22f -
                                 cam.transform.up * 0.2f +
@@ -232,35 +284,44 @@ public class VRGazePointer : MonoBehaviour
 
         Vector3 localPos = Vector3.zero;
         Quaternion localRot = Quaternion.identity;
-        bool found = false;
+        bool hasRot = false;
 
-        // A. InputDevices 탐색
+        // A. InputDevices에서 XRNode 기반 검색
         var devices = new List<InputDevice>();
-        var charMask = (node == XRNode.RightHand) ? InputDeviceCharacteristics.Right : InputDeviceCharacteristics.Left;
-        charMask |= InputDeviceCharacteristics.Controller;
-        InputDevices.GetDevicesWithCharacteristics(charMask, devices);
+        InputDevices.GetDevicesAtXRNode(node, devices);
+
+        if (devices.Count == 0)
+        {
+            var charMask = (node == XRNode.RightHand) ? InputDeviceCharacteristics.Right : InputDeviceCharacteristics.Left;
+            charMask |= InputDeviceCharacteristics.Controller;
+            InputDevices.GetDevicesWithCharacteristics(charMask, devices);
+        }
 
         if (devices.Count > 0)
         {
-            if (devices[0].TryGetFeatureValue(CommonUsages.devicePosition, out localPos) &&
-                devices[0].TryGetFeatureValue(CommonUsages.deviceRotation, out localRot) &&
-                localPos != Vector3.zero)
+            if (devices[0].TryGetFeatureValue(CommonUsages.deviceRotation, out localRot) && localRot != Quaternion.identity)
             {
-                found = true;
+                hasRot = true;
             }
+            devices[0].TryGetFeatureValue(CommonUsages.devicePosition, out localPos);
         }
 
-        // B. InputTracking 탐색 (Oculus Link 네이티브 지원)
-        if (!found)
+        // B. InputTracking 폴백 (Oculus Link)
+        if (!hasRot)
         {
-            localPos = UnityEngine.XR.InputTracking.GetLocalPosition(node);
             localRot = UnityEngine.XR.InputTracking.GetLocalRotation(node);
-            if (localPos != Vector3.zero) found = true;
+            localPos = UnityEngine.XR.InputTracking.GetLocalPosition(node);
+            if (localRot != Quaternion.identity) hasRot = true;
         }
 
-        if (found)
+        if (hasRot)
         {
-            // 헤드셋 카메라 월드 좌표계를 기준으로 컨트롤러 월드 위치 계산
+            // 컨트롤러 위치가 0이면 카메라 기준 자연스러운 손 위치로 오프셋 부여
+            if (localPos == Vector3.zero)
+            {
+                localPos = (node == XRNode.RightHand) ? new Vector3(0.2f, -0.2f, 0.35f) : new Vector3(-0.2f, -0.2f, 0.35f);
+            }
+
             worldPos = cam.transform.position + cam.transform.rotation * localPos;
             worldRot = cam.transform.rotation * localRot;
             return true;
