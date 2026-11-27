@@ -5,26 +5,26 @@ using UnityEngine;
 using UnityEngine.UI;
 using UnityEngine.EventSystems;
 using UnityEngine.XR;
+using UnityEngine.SpatialTracking;
 using DG.Tweening;
 
 public class VRGazePointer : MonoBehaviour
 {
-    [Header("Laser & Pointer Settings")]
-    [SerializeField] float maxLaserDistance = 2500f; // z=800 캔버스까지 충분한 거리
+    [Header("Laser Settings")]
+    [SerializeField] float maxLaserDistance = 3000f;
     [SerializeField] float laserWidth = 0.012f;
 
     Camera cam;
-    Transform pointerDot;
-    Transform controllerVisual;
-    LineRenderer laserLine;
-    Button currentButton;
-    Vector3 originalButtonScale = Vector3.one;
-    bool wasTriggerPressed = false;
+    GameObject rightHandObj;
+    GameObject leftHandObj;
+    TrackedPoseDriver rightDriver;
+    TrackedPoseDriver leftDriver;
 
-    InputDevice rightController;
-    InputDevice leftController;
-    bool hasRightController = false;
-    bool hasLeftController = false;
+    LineRenderer laserLine;
+    Transform reticleDot;
+    Button currentTargetButton;
+
+    bool wasTriggerPressed = false;
 
     // 모든 씬 로드 시 메인 카메라에 자동 부착
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
@@ -42,22 +42,27 @@ public class VRGazePointer : MonoBehaviour
         cam = GetComponent<Camera>();
         if (cam == null) cam = Camera.main;
 
-        CreatePointerDot();
-        CreateControllerVisual();
-        CreateLaserLine();
-        DisableOldCameraPointer();
+        // 1. 카메라에 HMD 헤드 트래킹 드라이버 부착 (공간 고정 보장)
+        EnsureHmdDriver();
+
+        // 2. 메타 퀘스트 순정 컨트롤러 하드웨어 오브젝트 생성 및 TrackedPoseDriver 부착
+        SetupControllerObjects();
+
+        // 3. 레이저 라인 및 버튼 표면 조준점 생성
+        SetupLaserVisuals();
+
+        // 4. 시야 정중앙을 가리는 구형 빨간 점(Pointer) 완전 비활성화
+        DisableLegacyPointer();
     }
 
     void Start()
     {
-        DisableOldCameraPointer();
+        DisableLegacyPointer();
         EnsureCollidersOnButtons();
-        ScanControllers();
     }
 
-    void DisableOldCameraPointer()
+    void DisableLegacyPointer()
     {
-        // 카메라 자식으로 붙어 시선 한가운데를 가리던 구형 빨간 점(Pointer) 완전 비활성화
         var oldPointer = transform.Find("Pointer");
         if (oldPointer != null && oldPointer.gameObject.activeSelf)
         {
@@ -65,59 +70,86 @@ public class VRGazePointer : MonoBehaviour
         }
     }
 
-    void CreatePointerDot()
+    void EnsureHmdDriver()
     {
-        var dotObj = GameObject.CreatePrimitive(PrimitiveType.Sphere);
-        dotObj.name = "VR_OculusReticleDot";
-        dotObj.transform.localScale = Vector3.one * 0.1f;
-
-        var col = dotObj.GetComponent<Collider>();
-        if (col != null) Destroy(col);
-
-        var renderer = dotObj.GetComponent<MeshRenderer>();
-        if (renderer != null)
+        var driver = cam.GetComponent<TrackedPoseDriver>();
+        if (driver == null)
         {
-            renderer.material = new Material(Shader.Find("Sprites/Default"));
-            renderer.material.color = new Color(0.1f, 0.95f, 1f, 0.95f); // 밝은 오큘러스 시안 블루
+            driver = cam.gameObject.AddComponent<TrackedPoseDriver>();
         }
-
-        pointerDot = dotObj.transform;
-        pointerDot.gameObject.SetActive(false);
+        driver.SetPoseSource(TrackedPoseDriver.DeviceType.GenericXRDevice, TrackedPoseDriver.TrackedPose.Center);
+        driver.trackingType = TrackedPoseDriver.TrackingType.RotationAndPosition;
+        driver.updateType = TrackedPoseDriver.UpdateType.UpdateAndBeforeRender;
     }
 
-    void CreateControllerVisual()
+    void SetupControllerObjects()
     {
-        // 내 손 위치를 눈으로 확인할 수 있는 오큘러스 컨트롤러 핸드 모델
-        var handObj = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
-        handObj.name = "VR_OculusControllerHand";
-        handObj.transform.localScale = new Vector3(0.04f, 0.08f, 0.04f); // 4cm 두께, 16cm 길이의 원통형 컨트롤러 그립
-        handObj.transform.localRotation = Quaternion.Euler(90f, 0, 0);
+        // 1. 오른손 컨트롤러 생성 및 네이티브 TrackedPoseDriver 부착
+        rightHandObj = new GameObject("[VR_Oculus_RightController]");
+        rightDriver = rightHandObj.AddComponent<TrackedPoseDriver>();
+        rightDriver.SetPoseSource(TrackedPoseDriver.DeviceType.GenericXRController, TrackedPoseDriver.TrackedPose.RightPose);
+        rightDriver.trackingType = TrackedPoseDriver.TrackingType.RotationAndPosition;
+        rightDriver.updateType = TrackedPoseDriver.UpdateType.UpdateAndBeforeRender;
+        CreateHandMesh(rightHandObj.transform);
 
-        var col = handObj.GetComponent<Collider>();
-        if (col != null) Destroy(col);
-
-        var renderer = handObj.GetComponent<MeshRenderer>();
-        if (renderer != null)
-        {
-            renderer.material = new Material(Shader.Find("Sprites/Default"));
-            renderer.material.color = new Color(0.2f, 0.25f, 0.35f, 0.95f); // 메타 퀘스트 다크 그레이 그립
-        }
-
-        controllerVisual = handObj.transform;
-        controllerVisual.gameObject.SetActive(false);
+        // 2. 왼손 컨트롤러 생성 및 네이티브 TrackedPoseDriver 부착
+        leftHandObj = new GameObject("[VR_Oculus_LeftController]");
+        leftDriver = leftHandObj.AddComponent<TrackedPoseDriver>();
+        leftDriver.SetPoseSource(TrackedPoseDriver.DeviceType.GenericXRController, TrackedPoseDriver.TrackedPose.LeftPose);
+        leftDriver.trackingType = TrackedPoseDriver.TrackingType.RotationAndPosition;
+        leftDriver.updateType = TrackedPoseDriver.UpdateType.UpdateAndBeforeRender;
+        CreateHandMesh(leftHandObj.transform);
     }
 
-    void CreateLaserLine()
+    void CreateHandMesh(Transform parent)
     {
+        var model = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+        model.name = "ControllerGripVisual";
+        model.transform.SetParent(parent, false);
+        model.transform.localScale = new Vector3(0.04f, 0.08f, 0.04f); // 4cm 굵기, 16cm 길이 그립
+        model.transform.localRotation = Quaternion.Euler(90f, 0, 0);
+
+        var col = model.GetComponent<Collider>();
+        if (col != null) Destroy(col);
+
+        var ren = model.GetComponent<MeshRenderer>();
+        if (ren != null)
+        {
+            ren.material = new Material(Shader.Find("Sprites/Default"));
+            ren.material.color = new Color(0.2f, 0.25f, 0.35f, 0.95f); // 메타 퀘스트 스타일 그레이
+        }
+    }
+
+    void SetupLaserVisuals()
+    {
+        // 레이저 라인렌더러
         laserLine = gameObject.AddComponent<LineRenderer>();
         laserLine.material = new Material(Shader.Find("Sprites/Default"));
-        laserLine.startColor = new Color(0.15f, 0.9f, 1f, 0.95f); // 손끝에서 선명한 시안 블루
-        laserLine.endColor = new Color(0.15f, 0.9f, 1f, 0.2f);   // 끝부분 부드러운 페이드
+        laserLine.startColor = new Color(0.15f, 0.9f, 1f, 0.95f); // 손끝에서 선명한 오큘러스 블루
+        laserLine.endColor = new Color(0.15f, 0.9f, 1f, 0.25f);
         laserLine.startWidth = laserWidth;
         laserLine.endWidth = laserWidth * 0.4f;
         laserLine.positionCount = 2;
         laserLine.useWorldSpace = true;
         laserLine.enabled = true;
+
+        // 버튼 표면 원형 조준점(Reticle)
+        var dotObj = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+        dotObj.name = "VR_OculusReticleDot";
+        dotObj.transform.localScale = Vector3.one * 0.1f;
+
+        var dotCol = dotObj.GetComponent<Collider>();
+        if (dotCol != null) Destroy(dotCol);
+
+        var dotRen = dotObj.GetComponent<MeshRenderer>();
+        if (dotRen != null)
+        {
+            dotRen.material = new Material(Shader.Find("Sprites/Default"));
+            dotRen.material.color = new Color(0.1f, 0.95f, 1f, 0.95f);
+        }
+
+        reticleDot = dotObj.transform;
+        reticleDot.gameObject.SetActive(false);
     }
 
     void EnsureCollidersOnButtons()
@@ -135,48 +167,10 @@ public class VRGazePointer : MonoBehaviour
             var rect = btn.GetComponent<RectTransform>();
             if (rect != null)
             {
-                // 두께 50의 넉넉한 3D 박스로 생성
-                box.size = new Vector3(Mathf.Max(20f, rect.rect.width * 1.1f), Mathf.Max(20f, rect.rect.height * 1.1f), 50f);
+                box.size = new Vector3(Mathf.Max(30f, rect.rect.width * 1.3f), Mathf.Max(30f, rect.rect.height * 1.3f), 100f);
                 box.center = new Vector3(rect.rect.center.x, rect.rect.center.y, 0f);
                 box.isTrigger = true;
             }
-        }
-    }
-
-    void ScanControllers()
-    {
-        // 1. 오른손 컨트롤러 검색
-        var rDevs = new List<InputDevice>();
-        InputDevices.GetDevicesWithCharacteristics(InputDeviceCharacteristics.Right | InputDeviceCharacteristics.Controller, rDevs);
-        if (rDevs.Count == 0) InputDevices.GetDevicesWithCharacteristics(InputDeviceCharacteristics.Right | InputDeviceCharacteristics.HeldInHand, rDevs);
-        if (rDevs.Count == 0) InputDevices.GetDevicesAtXRNode(XRNode.RightHand, rDevs);
-
-        if (rDevs.Count > 0 && rDevs[0].isValid)
-        {
-            rightController = rDevs[0];
-            hasRightController = true;
-            Debug.Log($"[VR] Right Controller Connected: {rightController.name}");
-        }
-        else
-        {
-            hasRightController = false;
-        }
-
-        // 2. 왼손 컨트롤러 검색
-        var lDevs = new List<InputDevice>();
-        InputDevices.GetDevicesWithCharacteristics(InputDeviceCharacteristics.Left | InputDeviceCharacteristics.Controller, lDevs);
-        if (lDevs.Count == 0) InputDevices.GetDevicesWithCharacteristics(InputDeviceCharacteristics.Left | InputDeviceCharacteristics.HeldInHand, lDevs);
-        if (lDevs.Count == 0) InputDevices.GetDevicesAtXRNode(XRNode.LeftHand, lDevs);
-
-        if (lDevs.Count > 0 && lDevs[0].isValid)
-        {
-            leftController = lDevs[0];
-            hasLeftController = true;
-            Debug.Log($"[VR] Left Controller Connected: {leftController.name}");
-        }
-        else
-        {
-            hasLeftController = false;
         }
     }
 
@@ -188,34 +182,29 @@ public class VRGazePointer : MonoBehaviour
             if (cam == null) return;
         }
 
-        DisableOldCameraPointer();
+        DisableLegacyPointer();
+        EnsureCollidersOnButtons();
 
-        // 1. 헤드셋 머리 회전 실시간 반영 (월드 캔버스가 고개에 붙지 않고 공간에 고정)
-        UpdateHeadPose(out Vector3 headPos, out Quaternion headRot);
+        // 1. 순정 메타 퀘스트 컨트롤러에서 레이저 시작점 및 조준 방향 취득
+        Transform controllerHand = GetActiveController();
+        Vector3 rayOrigin = controllerHand.position;
+        Vector3 rayDirection = controllerHand.forward;
 
-        // 2. 컨트롤러 연결 상태 주기적 갱신
-        if (!hasRightController && !hasLeftController)
+        // PC 에디터 마우스 조작 폴백 (VR 미착용 시 마우스로 테스트 가능)
+        if (Input.mousePresent && (Mathf.Abs(Input.GetAxis("Mouse X")) > 0.05f || Mathf.Abs(Input.GetAxis("Mouse Y")) > 0.05f))
         {
-            ScanControllers();
+            Ray mouseRay = cam.ScreenPointToRay(Input.mousePosition);
+            rayOrigin = mouseRay.origin;
+            rayDirection = mouseRay.direction;
         }
 
-        // 3. 순정 메타 퀘스트 손목 각도 및 손 위치 기반 레이(Ray) 계산
-        Ray aimRay = CalculateOculusControllerRay(headPos, out Vector3 handOrigin, out Quaternion handRotation, out bool isControllerActive);
+        Ray aimRay = new Ray(rayOrigin, rayDirection);
 
-        // 4. 가상 컨트롤러 손 비주얼 갱신
-        if (controllerVisual != null)
-        {
-            controllerVisual.position = handOrigin;
-            controllerVisual.rotation = handRotation * Quaternion.Euler(90f, 0, 0);
-            controllerVisual.gameObject.SetActive(true);
-        }
-
-        // 5. 버튼 레이캐스트 검사 (3D Physics 1순위, RectTransform 기하 2순위)
+        // 2. 버튼 3D 레이캐스트 충돌 검사
         Button hitButton = null;
         Vector3 hitPoint = Vector3.zero;
         float hitDistance = float.MaxValue;
 
-        // A. 3D 물리 레이캐스트 (버튼의 BoxCollider 감지)
         RaycastHit[] hits = Physics.RaycastAll(aimRay, maxLaserDistance, ~0, QueryTriggerInteraction.Collide);
         foreach (var h in hits)
         {
@@ -231,276 +220,105 @@ public class VRGazePointer : MonoBehaviour
             }
         }
 
-        // B. 기하 평면 폴백
-        if (hitButton == null)
+        // 3. 레이저 빔 및 조준점 비주얼 업데이트
+        laserLine.enabled = true;
+        laserLine.SetPosition(0, rayOrigin);
+
+        if (hitButton != null)
         {
-            var allButtons = FindObjectsOfType<Button>();
-            foreach (var btn in allButtons)
+            laserLine.SetPosition(1, hitPoint);
+            reticleDot.gameObject.SetActive(true);
+            reticleDot.position = hitPoint;
+            // z=800 거리에서도 선명하게 보이도록 스케일 조정 (약 20유닛)
+            float dotScale = Mathf.Clamp(hitDistance * 0.025f, 0.1f, 30f);
+            reticleDot.localScale = Vector3.one * dotScale;
+        }
+        else
+        {
+            laserLine.SetPosition(1, aimRay.GetPoint(Mathf.Min(800f, maxLaserDistance)));
+            reticleDot.gameObject.SetActive(false);
+        }
+
+        // 4. 버튼 호버 피드백
+        if (hitButton != currentTargetButton)
+        {
+            if (currentTargetButton != null)
             {
-                if (btn == null || !btn.interactable || !btn.gameObject.activeInHierarchy) continue;
-
-                var rect = btn.GetComponent<RectTransform>();
-                if (rect == null) continue;
-
-                Vector3[] corners = new Vector3[4];
-                rect.GetWorldCorners(corners);
-
-                Plane plane = new Plane(corners[0], corners[1], corners[2]);
-                if (plane.Raycast(aimRay, out float enter) && enter > 0f && enter < hitDistance && enter < maxLaserDistance)
-                {
-                    Vector3 candidate = aimRay.GetPoint(enter);
-                    Vector3 vUp = corners[1] - corners[0];
-                    Vector3 vRight = corners[3] - corners[0];
-                    Vector3 d = candidate - corners[0];
-
-                    float dotUp = Vector3.Dot(d, vUp);
-                    float dotRight = Vector3.Dot(d, vRight);
-
-                    if (dotUp >= 0f && dotUp <= vUp.sqrMagnitude && dotRight >= 0f && dotRight <= vRight.sqrMagnitude)
-                    {
-                        hitDistance = enter;
-                        hitButton = btn;
-                        hitPoint = candidate;
-                    }
-                }
+                currentTargetButton.transform.DOScale(Vector3.one, 0.15f);
+            }
+            currentTargetButton = hitButton;
+            if (currentTargetButton != null)
+            {
+                currentTargetButton.transform.DOScale(Vector3.one * 1.08f, 0.15f);
             }
         }
 
-        // 6. 레이저 빔 및 조준점 렌더링
-        if (laserLine != null)
-        {
-            laserLine.enabled = true;
-            laserLine.SetPosition(0, handOrigin);
-
-            if (hitButton != null)
-            {
-                laserLine.SetPosition(1, hitPoint);
-                if (pointerDot != null)
-                {
-                    pointerDot.gameObject.SetActive(true);
-                    pointerDot.position = hitPoint;
-                    // 거리에 비례하여 버튼 위에서 선명하고 적당한 크기(z=800에서 약 18~20유닛)로 유지
-                    float dotScale = Mathf.Clamp(hitDistance * 0.025f, 0.05f, 25f);
-                    pointerDot.localScale = Vector3.one * dotScale;
-                }
-            }
-            else
-            {
-                float beamLength = Mathf.Min(800f, maxLaserDistance);
-                laserLine.SetPosition(1, aimRay.GetPoint(beamLength));
-                if (pointerDot != null) pointerDot.gameObject.SetActive(false);
-            }
-        }
-
-        // 7. 버튼 호버 피드백 (조준 시 살짝 확대)
-        if (hitButton != currentButton)
-        {
-            if (currentButton != null)
-            {
-                currentButton.transform.DOScale(originalButtonScale, 0.15f);
-            }
-
-            currentButton = hitButton;
-
-            if (currentButton != null)
-            {
-                originalButtonScale = currentButton.transform.localScale;
-                currentButton.transform.DOScale(originalButtonScale * 1.08f, 0.15f);
-            }
-        }
-
-        // 8. 오큘러스 순정 트리거 & A/X 버튼 클릭 처리
-        bool isTriggerDown = CheckUniversalTriggerDown();
+        // 5. 트리거 / A버튼 클릭 입력 판정
+        bool isTriggerDown = CheckTriggerInput();
 
         if (isTriggerDown)
         {
-            Button targetToClick = hitButton != null ? hitButton : currentButton;
-            if (targetToClick != null)
+            Button btnToClick = hitButton != null ? hitButton : currentTargetButton;
+            if (btnToClick != null)
             {
-                ExecuteButtonClick(targetToClick);
+                ClickButton(btnToClick);
             }
         }
     }
 
-    void UpdateHeadPose(out Vector3 headPos, out Quaternion headRot)
+    Transform GetActiveController()
     {
-        headPos = Vector3.zero;
-        headRot = Quaternion.identity;
-        bool gotRot = false;
-
-        var headDevs = new List<InputDevice>();
-        InputDevices.GetDevicesWithCharacteristics(InputDeviceCharacteristics.HeadMounted, headDevs);
-        if (headDevs.Count == 0) InputDevices.GetDevicesAtXRNode(XRNode.CenterEye, headDevs);
-
-        if (headDevs.Count > 0)
+        // 1. 오른손 컨트롤러 트래킹 데이터 확인
+        if (rightHandObj != null && (rightHandObj.transform.position != Vector3.zero || rightHandObj.transform.rotation != Quaternion.identity))
         {
-            if (headDevs[0].TryGetFeatureValue(CommonUsages.deviceRotation, out headRot))
-            {
-                gotRot = true;
-            }
-            headDevs[0].TryGetFeatureValue(CommonUsages.devicePosition, out headPos);
+            return rightHandObj.transform;
         }
 
-        if (!gotRot)
+        // 2. 왼손 컨트롤러 트래킹 데이터 확인
+        if (leftHandObj != null && (leftHandObj.transform.position != Vector3.zero || leftHandObj.transform.rotation != Quaternion.identity))
         {
-            headRot = UnityEngine.XR.InputTracking.GetLocalRotation(XRNode.CenterEye);
-            headPos = UnityEngine.XR.InputTracking.GetLocalPosition(XRNode.CenterEye);
-            if (headRot != Quaternion.identity) gotRot = true;
+            return leftHandObj.transform;
         }
 
-        if (gotRot)
+        // 3. 컨트롤러가 아직 대기 상태인 경우: 카메라 우측 앞 35cm 자연스러운 손 위치에 배치
+        if (rightHandObj != null)
         {
-            cam.transform.localRotation = headRot;
+            rightHandObj.transform.position = cam.transform.position + cam.transform.right * 0.22f - Vector3.up * 0.25f + cam.transform.forward * 0.35f;
+            return rightHandObj.transform;
         }
+
+        return cam.transform;
     }
 
-    Ray CalculateOculusControllerRay(Vector3 headPos, out Vector3 handOrigin, out Quaternion handRotation, out bool isControllerActive)
-    {
-        handOrigin = Vector3.zero;
-        handRotation = Quaternion.identity;
-        isControllerActive = false;
-
-        // 1. 오른손 컨트롤러 회전/위치 취득
-        if (hasRightController && rightController.isValid)
-        {
-            if (rightController.TryGetFeatureValue(CommonUsages.deviceRotation, out Quaternion rRot))
-            {
-                handRotation = rRot;
-                isControllerActive = true;
-            }
-            rightController.TryGetFeatureValue(CommonUsages.devicePosition, out Vector3 rPos);
-
-            if (isControllerActive)
-            {
-                if (rPos != Vector3.zero)
-                {
-                    Vector3 relativeOffset = (headPos != Vector3.zero) ? (rPos - headPos) : rPos;
-                    handOrigin = cam.transform.position + relativeOffset;
-                }
-                else
-                {
-                    // 3DoF 또는 위치 미전송 시 가슴 앞 35cm, 우측 20cm 자연스러운 손 위치
-                    handOrigin = cam.transform.position + cam.transform.right * 0.22f - Vector3.up * 0.25f + cam.transform.forward * 0.35f;
-                }
-                return new Ray(handOrigin, handRotation * Vector3.forward);
-            }
-        }
-
-        // 2. 왼손 컨트롤러 취득 (오른손이 없을 때)
-        if (hasLeftController && leftController.isValid)
-        {
-            if (leftController.TryGetFeatureValue(CommonUsages.deviceRotation, out Quaternion lRot))
-            {
-                handRotation = lRot;
-                isControllerActive = true;
-            }
-            leftController.TryGetFeatureValue(CommonUsages.devicePosition, out Vector3 lPos);
-
-            if (isControllerActive)
-            {
-                if (lPos != Vector3.zero)
-                {
-                    Vector3 relativeOffset = (headPos != Vector3.zero) ? (lPos - headPos) : lPos;
-                    handOrigin = cam.transform.position + relativeOffset;
-                }
-                else
-                {
-                    handOrigin = cam.transform.position - cam.transform.right * 0.22f - Vector3.up * 0.25f + cam.transform.forward * 0.35f;
-                }
-                return new Ray(handOrigin, handRotation * Vector3.forward);
-            }
-        }
-
-        // 3. InputTracking 네이티브 폴백 (오큘러스 Link)
-        Quaternion trackRot = UnityEngine.XR.InputTracking.GetLocalRotation(XRNode.RightHand);
-        Vector3 trackPos = UnityEngine.XR.InputTracking.GetLocalPosition(XRNode.RightHand);
-        if (trackRot != Quaternion.identity || trackPos != Vector3.zero)
-        {
-            handRotation = trackRot;
-            isControllerActive = true;
-            if (trackPos != Vector3.zero)
-            {
-                Vector3 relativeOffset = (headPos != Vector3.zero) ? (trackPos - headPos) : trackPos;
-                handOrigin = cam.transform.position + relativeOffset;
-            }
-            else
-            {
-                handOrigin = cam.transform.position + cam.transform.right * 0.22f - Vector3.up * 0.25f + cam.transform.forward * 0.35f;
-            }
-            return new Ray(handOrigin, handRotation * Vector3.forward);
-        }
-
-        // 4. PC 에디터 마우스 조작 폴백
-        if (Input.mousePresent && (Mathf.Abs(Input.GetAxis("Mouse X")) > 0.05f || Mathf.Abs(Input.GetAxis("Mouse Y")) > 0.05f || Input.GetMouseButton(0)))
-        {
-            handOrigin = cam.transform.position;
-            handRotation = cam.transform.rotation;
-            return cam.ScreenPointToRay(Input.mousePosition);
-        }
-
-        // 5. 컨트롤러 완전 미인식 시 가상 손 위치에서 발사
-        handOrigin = cam.transform.position + cam.transform.right * 0.22f - cam.transform.up * 0.22f + cam.transform.forward * 0.35f;
-        handRotation = cam.transform.rotation;
-        return new Ray(handOrigin, cam.transform.forward);
-    }
-
-    void ExecuteButtonClick(Button btn)
-    {
-        if (btn == null) return;
-
-        Debug.Log($"<color=cyan>[VR Controller] Button Clicked:</color> {btn.name}");
-
-        // 버튼 펀치 애니메이션
-        btn.transform.DOPunchScale(Vector3.one * 0.18f, 0.2f, 10, 1f);
-
-        // 1. 버튼 onClick 실행
-        btn.onClick.Invoke();
-
-        // 2. EventSystem 포인터 클릭 실행
-        var pointerEventData = new PointerEventData(EventSystem.current);
-        ExecuteEvents.Execute(btn.gameObject, pointerEventData, ExecuteEvents.pointerClickHandler);
-        ExecuteEvents.Execute(btn.gameObject, pointerEventData, ExecuteEvents.submitHandler);
-    }
-
-    bool CheckUniversalTriggerDown()
+    bool CheckTriggerInput()
     {
         bool isPressed = false;
 
-        // 1. 모든 연결된 XR 컨트롤러에서 검지 트리거 / A 버튼 / X 버튼 상태 검사
-        var allDevices = new List<InputDevice>();
-        InputDevices.GetDevices(allDevices);
-        foreach (var dev in allDevices)
+        // 1. 모든 XR 입력 장치 (검지 트리거, Primary A/X 버튼, Grip 버튼)
+        var devices = new List<InputDevice>();
+        InputDevices.GetDevices(devices);
+        foreach (var dev in devices)
         {
-            // 검지 방아쇠 (Index Trigger)
             if (dev.TryGetFeatureValue(CommonUsages.triggerButton, out bool tb) && tb) isPressed = true;
-            if (dev.TryGetFeatureValue(CommonUsages.trigger, out float tVal) && tVal > 0.25f) isPressed = true;
-
-            // Primary 버튼 (A 버튼 - 오른손 / X 버튼 - 왼손)
+            if (dev.TryGetFeatureValue(CommonUsages.trigger, out float tVal) && tVal > 0.15f) isPressed = true;
             if (dev.TryGetFeatureValue(CommonUsages.primaryButton, out bool pb) && pb) isPressed = true;
-
-            // Secondary 버튼 (B 버튼 / Y 버튼)
             if (dev.TryGetFeatureValue(CommonUsages.secondaryButton, out bool sb) && sb) isPressed = true;
-
-            // 그립 버튼
             if (dev.TryGetFeatureValue(CommonUsages.gripButton, out bool gb) && gb) isPressed = true;
-            if (dev.TryGetFeatureValue(CommonUsages.grip, out float gVal) && gVal > 0.5f) isPressed = true;
-
-            // 조이스틱 클릭
-            if (dev.TryGetFeatureValue(CommonUsages.primary2DAxisClick, out bool stick) && stick) isPressed = true;
+            if (dev.TryGetFeatureValue(CommonUsages.grip, out float gVal) && gVal > 0.3f) isPressed = true;
         }
 
-        // 2. 조이스틱 버튼 (Oculus Touch KeyCode: 0~19)
+        // 2. 오큘러스 Touch 조이스틱 버튼 (0~19)
         for (int i = 0; i < 20; i++)
         {
             if (Input.GetKey(KeyCode.JoystickButton0 + i)) isPressed = true;
         }
 
-        // 3. 조이스틱 아날로그 축 (Axis 1~28)
+        // 3. 오큘러스 아날로그 트리거 축 (1~28)
         for (int i = 1; i <= 28; i++)
         {
             try
             {
-                if (Mathf.Abs(Input.GetAxisRaw("Axis " + i)) > 0.35f) isPressed = true;
+                if (Mathf.Abs(Input.GetAxisRaw("Axis " + i)) > 0.3f) isPressed = true;
             }
             catch {}
         }
@@ -511,16 +329,34 @@ public class VRGazePointer : MonoBehaviour
             isPressed = true;
         }
 
-        // 이번 프레임에 막 눌린 순간(Down 엣지) 판정
         bool triggerDown = isPressed && !wasTriggerPressed;
         wasTriggerPressed = isPressed;
 
         return triggerDown;
     }
 
+    void ClickButton(Button btn)
+    {
+        if (btn == null) return;
+
+        Debug.Log($"<color=green>[VR Controller] Button Clicked:</color> {btn.name}");
+
+        // 버튼 클릭 펀치 피드백
+        btn.transform.DOPunchScale(Vector3.one * 0.2f, 0.2f, 10, 1f);
+
+        // 1. Unity UI onClick 이벤트 실행
+        btn.onClick.Invoke();
+
+        // 2. EventSystem 포인터 클릭 이벤트 발행
+        var pointerEventData = new PointerEventData(EventSystem.current);
+        ExecuteEvents.Execute(btn.gameObject, pointerEventData, ExecuteEvents.pointerClickHandler);
+        ExecuteEvents.Execute(btn.gameObject, pointerEventData, ExecuteEvents.submitHandler);
+    }
+
     void OnDestroy()
     {
-        if (pointerDot != null) Destroy(pointerDot.gameObject);
-        if (controllerVisual != null) Destroy(controllerVisual.gameObject);
+        if (rightHandObj != null) Destroy(rightHandObj);
+        if (leftHandObj != null) Destroy(leftHandObj);
+        if (reticleDot != null) Destroy(reticleDot.gameObject);
     }
 }
