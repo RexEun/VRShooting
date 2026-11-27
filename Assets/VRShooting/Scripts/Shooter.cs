@@ -49,14 +49,16 @@ public class Shooter : MonoBehaviour
 
     bool CheckUniversalTrigger()
     {
-        // 1. XR InputDevices (오큘러스 / OpenXR 컨트롤러)
-        var controllers = new List<InputDevice>();
-        InputDevices.GetDevicesWithCharacteristics(InputDeviceCharacteristics.Controller, controllers);
-        foreach (var dev in controllers)
+        // 1. 모든 연결된 XR 디바이스에서 트리거 및 버튼 상태 탐색
+        var allDevices = new List<InputDevice>();
+        InputDevices.GetDevices(allDevices);
+        foreach (var dev in allDevices)
         {
             if (dev.TryGetFeatureValue(CommonUsages.triggerButton, out bool tb) && tb) return true;
-            if (dev.TryGetFeatureValue(CommonUsages.trigger, out float tVal) && tVal > 0.35f) return true;
+            if (dev.TryGetFeatureValue(CommonUsages.trigger, out float tVal) && tVal > 0.25f) return true;
             if (dev.TryGetFeatureValue(CommonUsages.primaryButton, out bool pb) && pb) return true;
+            if (dev.TryGetFeatureValue(CommonUsages.secondaryButton, out bool sb) && sb) return true;
+            if (dev.TryGetFeatureValue(CommonUsages.gripButton, out bool gb) && gb) return true;
         }
 
         // 2. XRNode 직접 탐색 (RightHand / LeftHand)
@@ -64,14 +66,14 @@ public class Shooter : MonoBehaviour
         if (rightHand.isValid)
         {
             if (rightHand.TryGetFeatureValue(CommonUsages.triggerButton, out bool tb) && tb) return true;
-            if (rightHand.TryGetFeatureValue(CommonUsages.trigger, out float tVal) && tVal > 0.35f) return true;
+            if (rightHand.TryGetFeatureValue(CommonUsages.trigger, out float tVal) && tVal > 0.25f) return true;
             if (rightHand.TryGetFeatureValue(CommonUsages.primaryButton, out bool pb) && pb) return true;
         }
         var leftHand = InputDevices.GetDeviceAtXRNode(XRNode.LeftHand);
         if (leftHand.isValid)
         {
             if (leftHand.TryGetFeatureValue(CommonUsages.triggerButton, out bool tb) && tb) return true;
-            if (leftHand.TryGetFeatureValue(CommonUsages.trigger, out float tVal) && tVal > 0.35f) return true;
+            if (leftHand.TryGetFeatureValue(CommonUsages.trigger, out float tVal) && tVal > 0.25f) return true;
         }
 
         // 3. 퀘스트 조이스틱 입력 (오큘러스 Link 네이티브 조이스틱 버튼: 15번 우측트리거, 14번 좌측트리거, 0번 A버튼, 2번 X버튼)
@@ -88,15 +90,15 @@ public class Shooter : MonoBehaviour
             if (Input.GetKey(KeyCode.JoystickButton0 + i)) return true;
         }
 
-        // 5. 오큘러스 트리거 아날로그 축 (Axis 9, Axis 10)
-        try
+        // 5. 오큘러스 트리거 아날로그 축 (Axis 1~28)
+        for (int i = 1; i <= 28; i++)
         {
-            if (Mathf.Abs(Input.GetAxisRaw("Axis 9")) > 0.35f || Mathf.Abs(Input.GetAxisRaw("Axis 10")) > 0.35f)
+            try
             {
-                return true;
+                if (Mathf.Abs(Input.GetAxisRaw("Axis " + i)) > 0.35f) return true;
             }
+            catch {}
         }
-        catch {}
 
         // 6. PC 마우스 좌클릭 / Fire1 / 스페이스바
         if (Input.GetButton("Fire1") || Input.GetMouseButton(0) || Input.GetKey(KeyCode.Space))

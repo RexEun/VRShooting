@@ -16,6 +16,7 @@ public class SceneChanger : MonoBehaviour
 
     void Awake()
     {
+        isTransitioning = false;
         EnsureFadeOverlay();
     }
 
